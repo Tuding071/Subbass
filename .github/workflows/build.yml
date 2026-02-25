@@ -1,52 +1,30 @@
-name: Build Single-File App
+name: Build
 on: [push]
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v3
-    
-    - name: Setup Python
-      uses: actions/setup-python@v4
+    - uses: actions/checkout@v3
+    - uses: actions/setup-python@v4
       with:
         python-version: '3.9'
     
-    - name: Install dependencies
+    - name: Install Buildozer
+      run: pip install buildozer
+      
+    - name: Initialize buildozer
       run: |
-        pip install buildozer cython
-        
-    - name: Create buildozer spec
-      run: |
-        cat > buildozer.spec << 'EOF'
-[app]
-title = Sub Bass Synthesizer
-package.name = subbass
-package.domain = org.example
-source.dir = .
-source.include_exts = py,png,jpg,kv,atlas
-version = 0.1
-requirements = python3,kivy,numpy,android
-orientation = portrait
-osx.python_version = 3
-osx.kivy_version = 2.1.0
-fullscreen = 0
-
-[buildozer]
-log_level = 2
-warn_on_root = 1
-EOF
-
-    - name: Build with Buildozer
-      uses: ArtemSBulgakov/buildozer-action@v1
-      id: buildozer
-      with:
-        workdir: .
-        buildozer_version: stable
-        
-    - name: Upload artifacts
+        buildozer init
+        sed -i 's/^requirements =.*/requirements = python3,kivy,numpy,android/' buildozer.spec
+        sed -i 's/^package.name =.*/package.name = subbass/' buildozer.spec
+        sed -i 's/^title =.*/title = Sub Bass Synthesizer/' buildozer.spec
+    
+    - name: Build APK
+      run: buildozer -v android debug
+      
+    - name: Upload APK
       uses: actions/upload-artifact@v3
       with:
-        name: package
-        path: ./bin/*.apk
+        name: app
+        path: bin/*.apk
