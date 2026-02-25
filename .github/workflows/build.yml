@@ -1,32 +1,180 @@
-name: Build PlusSub APK
+name: PlusSub Nightly Build
+
+permissions:
+  contents: write
 
 on:
-  push:
-    branches: [ main ]
-  pull_request:
-    branches: [ main ]
+  schedule:
+    - cron: '45 18 * * *'  # Runs daily at 2:45 AM PH time (18:45 UTC)
+  workflow_dispatch:        # Allows manual trigger
 
 jobs:
   build:
     runs-on: ubuntu-latest
+
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-    - name: Set up JDK 17
-      uses: actions/setup-java@v3
-      with:
-        java-version: '17'
-        distribution: 'temurin'
+      - name: Setup JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'adopt'
+          java-version: 17
+          cache: 'gradle'
 
-    - name: Setup Android SDK
-      uses: android-actions/setup-android@v3
+      - name: Setup Gradle 8.7
+        uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: 8.7
 
-    - name: Build with Gradle
-      run: chmod +x gradlew && ./gradlew assembleDebug
+      - name: Create app icon
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y imagemagick
+          # Create icon directories
+          mkdir -p app/src/main/res/mipmap-hdpi
+          mkdir -p app/src/main/res/mipmap-mdpi
+          mkdir -p app/src/main/res/mipmap-xhdpi
+          mkdir -p app/src/main/res/mipmap-xxhdpi
+          mkdir -p app/src/main/res/mipmap-xxxhdpi
+          
+          # Generate simple blue icon for PlusSub
+          convert -size 48x48 xc:"#2196F3" -font DejaVu-Sans -pointsize 24 -fill white -gravity center -annotate 0 "+" app/src/main/res/mipmap-hdpi/ic_launcher.png
+          convert -size 72x72 xc:"#2196F3" -font DejaVu-Sans -pointsize 32 -fill white -gravity center -annotate 0 "+" app/src/main/res/mipmap-xhdpi/ic_launcher.png
+          convert -size 96x96 xc:"#2196F3" -font DejaVu-Sans -pointsize 48 -fill white -gravity center -annotate 0 "+" app/src/main/res/mipmap-xxhdpi/ic_launcher.png
+          
+          echo "✓ Icon created for PlusSub"
 
-    - name: Upload APK
-      uses: actions/upload-artifact@v4
-      with:
-        name: plussub-debug
-        path: app/build/outputs/apk/debug/*.apk
+      - name: Create necessary resource files
+        run: |
+          # Create strings.xml if it doesn't exist
+          mkdir -p app/src/main/res/values
+          cat > app/src/main/res/values/strings.xml << 'EOF'
+          <resources>
+              <string name="app_name">PlusSub</string>
+          </resources>
+          EOF
+          
+          # Create empty proguard file
+          touch app/proguard-rules.pro
+          
+          echo "✓ Resource files created"
+
+      - name: Build debug APK
+        run: gradle assembleDebug
+
+      - name: Install apksigner
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y apksigner
+
+      - name: Create dummy keystore
+        run: |
+          keytool -genkeypair -v \
+            -keystore plussub.keystore \
+            -storepass plussub123 \
+            -alias plussubkey \
+            -keypass plussub123 \
+            -dname "CN=PlusSub, OU=Mobile, O=PlusSub, L=City, S=State, C=PH" \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 10000
+          
+          echo "✓ Keystore created"
+
+      - name: Sign APK with apksigner
+        run: |
+          apksigner sign \
+            --ks plussub.keystore \
+            --ks-key-alias plussubkey \
+            --ks-pass pass:plussub123 \
+            --key-pass pass:plussub123 \
+            --out PlusSub-signed.apk \
+            app/build/outputs/apk/debug/app-debug.apk
+          
+          echo "✓ APK signed"
+
+      - name: Verify APK signature
+        run: |
+          apksigner verify PlusSub-signed.apk
+          echo "✓ Signature verified"
+
+      - name: Get current date time in PH time
+        id: datetime
+        run: |
+          PH_TIME=$(TZ='Asia/Manila' date +'%Y%m%d_%I%M%p')
+          echo "filename_time=$PH_TIME" >> $GITHUB_OUTPUT
+          echo "PH Time: $PH_TIME"
+
+      - name: Create release APK with timestamp
+        run: |
+          mv PlusSub-signed.apk "PlusSub_${{ steps.datetime.outputs.filename_time }}.apk"
+          echo "✓ APK renamed: PlusSub_${{ steps.datetime.outputs.filename_time }}.apk"
+
+      - name: Create zip file with APK and info
+        run: |
+          # Create info file
+          cat > build_info.txt << EOF
+          PlusSub Nightly Build
+          Date: $(TZ='Asia/Manila' date)
+          Version: 1.0-nightly
+          Commit: $(git rev-parse --short HEAD)
+          Features:
+          - FL Studio style bar grid
+          - Per-bar sub-bass enable/disable
+          - Chord detection
+          - Octave control (-2, -1, 0)
+          - Volume control
+          - Basic EQ (song only)
+          EOF
+          
+          # Create zip with APK and info
+          zip "PlusSub_Nightly_${{ steps.datetime.outputs.filename_time }}.zip" \
+            "PlusSub_${{ steps.datetime.outputs.filename_time }}.apk" \
+            build_info.txt
+          
+          echo "✓ Zip file created"
+
+      - name: Upload zip artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: PlusSub-Nightly-${{ steps.datetime.outputs.filename_time }}
+          path: ./PlusSub_Nightly_${{ steps.datetime.outputs.filename_time }}.zip
+          retention-days: 30
+
+      - name: Create GitHub Release (optional)
+        if: github.event_name == 'schedule'  # Only for scheduled builds
+        uses: softprops/action-gh-release@v1
+        with:
+          name: PlusSub Nightly ${{ steps.datetime.outputs.filename_time }}
+          tag_name: nightly-${{ steps.datetime.outputs.filename_time }}
+          body: |
+            ## PlusSub Nightly Build
+            
+            **Build Time:** $(TZ='Asia/Manila' date)
+            **Commit:** $(git rev-parse --short HEAD)
+            
+            ### Features:
+            - FL Studio style bar grid
+            - Per-bar sub-bass enable/disable
+            - Chord detection
+            - Octave control (-2, -1, 0)
+            - Volume control
+            - Basic EQ (song only)
+            
+            ### How to use:
+            1. Download the APK from this release
+            2. Install on your Android device
+            3. Load a song and start adding sub-bass!
+            
+            ### Notes:
+            - This is an automatic nightly build
+            - May contain experimental features
+            - Report issues on GitHub
+          files: |
+            PlusSub_Nightly_${{ steps.datetime.outputs.filename_time }}.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
